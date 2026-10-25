@@ -18,7 +18,7 @@ use std::sync::{Mutex, OnceLock};
 
 use super::{
     Cli, Commands, FAMILY_ORDER, PipelineParallelOptions, PromptLookupOptions,
-    TensorParallelOptions, write_supported_models, write_supported_models_json,
+    TensorParallelOptions, ignore_broken_pipe, write_supported_models, write_supported_models_json,
 };
 
 static CLI_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -323,6 +323,31 @@ fn supported_models_header_uses_actual_count() {
     );
 }
 
+/// A stdout whose reader has already gone away, as in `mlxcel arch | true`.
+struct ClosedPipe;
+
+impl std::io::Write for ClosedPipe {
+    fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::ErrorKind::BrokenPipe.into())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn arch_json_treats_closed_reader_as_success() {
+    write_supported_models_json(ClosedPipe).unwrap();
+}
+
+#[test]
+fn ignore_broken_pipe_keeps_other_errors() {
+    assert!(ignore_broken_pipe(Err(std::io::ErrorKind::BrokenPipe.into())).is_ok());
+    let err = ignore_broken_pipe(Err(std::io::ErrorKind::StorageFull.into())).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::StorageFull);
+}
+
 #[test]
 fn arch_json_output_is_stable_registry_json() {
     let mut out = Vec::new();
@@ -332,7 +357,11 @@ fn arch_json_output_is_stable_registry_json() {
     let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(value["mlxcel_version"], env!("CARGO_PKG_VERSION"));
     let families = value["families"].as_array().unwrap();
-    assert_eq!(families.len(), mlxcel::models::ALL_MODEL_TYPES.len() + 2);
+    // The registry module pins the exact family count; here the JSON must
+    // carry every family it builds, including the standalone vision ones.
+    let registry = mlxcel::models::registry::build_architecture_registry(env!("CARGO_PKG_VERSION"));
+    assert_eq!(families.len(), registry.families.len());
+    assert!(families.len() > mlxcel::models::ALL_MODEL_TYPES.len());
     assert_eq!(families[0]["id"], "llama");
     assert!(
         value["runtime_kinds"]
@@ -453,8 +482,13 @@ fn arch_json_output_is_stable_registry_json() {
 fn supported_models_output_lists_sapiens2_dense_prediction() {
     let mut out = String::new();
     write_supported_models(&mut out).unwrap();
+    let dense = out
+        .split("Dense Prediction:\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n\n").next())
+        .unwrap_or_else(|| panic!("missing Dense Prediction section: {out}"));
     assert!(
-        out.contains("Dense Prediction:\n  - sapiens2"),
+        dense.lines().any(|line| line == "  - sapiens2"),
         "missing Sapiens2 dense family: {out}"
     );
 }
