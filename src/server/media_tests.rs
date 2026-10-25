@@ -22,10 +22,13 @@ use std::sync::{
 use super::{
     ImageInputLimits, MediaRequestMetadata, collect_image_data, extract_chat_image_data,
     extract_chat_video_paths_with_allowlist, fetch_labeled_image, read_image_url,
-    scan_insecure_allowlist_dirs, try_collect_image_data_with_limits, try_extract_chat_audio_data,
+    try_collect_image_data_with_limits, try_extract_chat_audio_data,
     try_extract_chat_audio_data_with_cancellation, try_extract_chat_image_data,
     try_read_image_url_with_limits,
 };
+// Only the `cfg(unix)` world-writable allowlist tests call it.
+#[cfg(unix)]
+use super::scan_insecure_allowlist_dirs;
 use crate::server::types::request::{InputAudio, VideoUrl};
 use crate::server::types::{
     ChatCompletionRequest, ContentPart, ImageUrl, Message, MessageContent, Role, SamplingParams,

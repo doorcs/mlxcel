@@ -1338,6 +1338,78 @@ fn xla_backend_requested_from_env() -> bool {
         .is_some_and(|backend| backend.eq_ignore_ascii_case("xla"))
 }
 
+/// Which distributed flags a server launch sets (native Windows gate, #58).
+///
+/// Both server CLIs fill this from their arguments before resolving the model,
+/// so a repo id is not downloaded only to be refused; `start_server` checks the
+/// built [`ServerStartupConfig`] again for programmatic callers.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ServerDistributedFlags {
+    pub pp_auto: bool,
+    pub pp_peer: bool,
+    pub distributed_config: bool,
+    pub node_role: bool,
+    pub peers: bool,
+    pub prefill_peers: bool,
+    pub decode_peers: bool,
+    pub serving_bind: bool,
+    pub pp_layers: bool,
+    pub tp_size: usize,
+}
+
+impl ServerDistributedFlags {
+    /// The first requested distributed flag, by its CLI name, or `None` for a
+    /// single-node server.
+    pub fn first_requested(&self) -> Option<&'static str> {
+        [
+            (self.pp_auto, "--pp-auto"),
+            (self.pp_peer, "--pp-peer"),
+            (self.distributed_config, "--distributed-config"),
+            (self.node_role, "--node-role"),
+            (self.peers, "--peers"),
+            (self.prefill_peers, "--prefill-peers"),
+            (self.decode_peers, "--decode-peers"),
+            (self.serving_bind, "--serving-bind"),
+            (self.pp_layers, "--pp-layers"),
+            (self.tp_size > 1, "--tp-size"),
+        ]
+        .into_iter()
+        .find_map(|(requested, flag)| requested.then_some(flag))
+    }
+
+    /// Fail when a distributed flag is set on a platform without distributed
+    /// inference (native Windows).
+    pub fn ensure_supported(&self) -> Result<()> {
+        match self.first_requested() {
+            Some(flag) => crate::distributed::ensure_distributed_supported(flag),
+            None => Ok(()),
+        }
+    }
+}
+
+impl From<&ServerStartupConfig> for ServerDistributedFlags {
+    fn from(startup: &ServerStartupConfig) -> Self {
+        Self {
+            pp_auto: startup.pp_auto.is_some(),
+            pp_peer: startup.pp_peer,
+            distributed_config: startup.distributed_config.is_some(),
+            node_role: startup.node_role.is_some(),
+            peers: !startup.peers.is_empty(),
+            prefill_peers: !startup.prefill_peers.is_empty(),
+            decode_peers: !startup.decode_peers.is_empty(),
+            serving_bind: startup.serving_bind.is_some(),
+            pp_layers: startup.pp_layers.is_some(),
+            tp_size: startup.tp_size,
+        }
+    }
+}
+
+/// The first distributed flag this startup requests, by its CLI name.
+#[cfg(test)]
+fn server_distributed_request(startup: &ServerStartupConfig) -> Option<&'static str> {
+    ServerDistributedFlags::from(startup).first_requested()
+}
+
 fn muse_glimmer_distributed_requested(startup: &ServerStartupConfig) -> bool {
     startup.distributed_config.is_some()
         || startup.node_role.is_some()
@@ -3046,6 +3118,7 @@ pub async fn start_server(mut startup: ServerStartupConfig) -> Result<()> {
     // Zero-config multi-machine pipeline bring-up. Runs before
     // the tensor-parallel / pipeline-parallel validators so the emitted TOML
     // passes through the existing distributed resolution path unchanged.
+    ServerDistributedFlags::from(&startup).ensure_supported()?;
     let zero_config_plan = run_zero_config_bring_up(&mut startup).await?;
     if startup.dry_run {
         if let Some(plan) = zero_config_plan.as_ref() {

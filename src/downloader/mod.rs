@@ -124,6 +124,8 @@ use futures::StreamExt;
 use hf_hub::api::sync::{Api, ApiBuilder};
 use hf_hub::{Repo, RepoType};
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
+// Used by the directory-fd-anchored download, which is `cfg(unix)`.
+#[cfg_attr(not(unix), allow(unused_imports))]
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Read;
@@ -575,6 +577,8 @@ fn repo_info_url(endpoint: &str, repo_id: &str, revision: &str) -> String {
     format!("{endpoint}/api/models/{repo_enc}/revision/{rev_enc}?blobs=true")
 }
 
+// Read only by the directory-fd-anchored download (`cfg(unix)`).
+#[cfg_attr(not(unix), allow(dead_code))]
 #[derive(Debug, Clone, serde::Deserialize)]
 struct HubRepoInfo {
     sha: String,
@@ -582,6 +586,8 @@ struct HubRepoInfo {
     siblings: Vec<HubSibling>,
 }
 
+// Read only by the directory-fd-anchored download (`cfg(unix)`).
+#[cfg_attr(not(unix), allow(dead_code))]
 #[derive(Debug, Clone, serde::Deserialize)]
 struct HubSibling {
     rfilename: String,
@@ -591,6 +597,8 @@ struct HubSibling {
     lfs: Option<HubLfs>,
 }
 
+// Read only by the directory-fd-anchored download (`cfg(unix)`).
+#[cfg_attr(not(unix), allow(dead_code))]
 #[derive(Debug, Clone, serde::Deserialize)]
 struct HubLfs {
     #[serde(default)]
@@ -599,6 +607,8 @@ struct HubLfs {
     size: Option<u64>,
 }
 
+// Read only by the directory-fd-anchored download (`cfg(unix)`).
+#[cfg_attr(not(unix), allow(dead_code))]
 #[derive(Debug, Clone)]
 struct SelectedDownloadFile {
     filename: String,
@@ -606,6 +616,8 @@ struct SelectedDownloadFile {
     sha256: Option<String>,
 }
 
+// Read only by the directory-fd-anchored download (`cfg(unix)`).
+#[cfg_attr(not(unix), allow(dead_code))]
 impl SelectedDownloadFile {
     fn from_sibling(repo_id: &str, sibling: &HubSibling) -> Result<Self> {
         validate_manifest_filename(repo_id, &sibling.rfilename)?;
@@ -773,8 +785,8 @@ async fn stream_file(
 /// (including a symlink), but `O_NOFOLLOW` makes the intent explicit and
 /// closes any narrow window between metadata stat and open syscall.
 ///
-/// On non-Unix targets mlxcel is not officially supported, so we fall back to
-/// the existing `create(truncate=true)` semantics with a comment.
+/// On Windows the open is exclusive (`create_new`) as well, without the
+/// `O_NOFOLLOW` half, which has no Windows counterpart.
 async fn open_tempfile_no_symlink(tmp: &Path) -> Result<tokio::fs::File> {
     #[cfg(unix)]
     {
@@ -798,12 +810,22 @@ async fn open_tempfile_no_symlink(tmp: &Path) -> Result<tokio::fs::File> {
     }
     #[cfg(not(unix))]
     {
-        // mlxcel only targets macOS + Linux; this branch exists so the crate
-        // still compiles on Windows / WASM if someone tries. The hardening is
-        // a no-op there.
-        tokio::fs::File::create(tmp)
+        // Windows (#58): `create_new` maps to CREATE_NEW, which fails on any
+        // existing entry at `tmp`, a symlink or junction included, so the
+        // exclusive-create half of the Unix guarantee holds here too. There is
+        // no O_NOFOLLOW to add on top.
+        tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(tmp)
             .await
-            .with_context(|| format!("Failed to create tempfile at {}", tmp.display()))
+            .with_context(|| {
+                format!(
+                    "Failed to create tempfile at {} (exclusive create). If the path already \
+                     exists, remove it manually and retry.",
+                    tmp.display()
+                )
+            })
     }
 }
 
@@ -1054,6 +1076,8 @@ fn validate_downloaded_size(
     Ok(())
 }
 
+// Read only by the directory-fd-anchored download (`cfg(unix)`).
+#[cfg_attr(not(unix), allow(dead_code))]
 fn validate_sha256_hex(filename: &str, hash: &str) -> Result<String> {
     if hash.len() != 64 || !hash.as_bytes().iter().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(anyhow!(
@@ -1063,6 +1087,8 @@ fn validate_sha256_hex(filename: &str, hash: &str) -> Result<String> {
     Ok(hash.to_ascii_lowercase())
 }
 
+// Read only by the directory-fd-anchored download (`cfg(unix)`).
+#[cfg_attr(not(unix), allow(dead_code))]
 fn sha256_hex(digest: impl AsRef<[u8]>) -> String {
     let bytes = digest.as_ref();
     let mut out = String::with_capacity(bytes.len() * 2);
@@ -1073,6 +1099,8 @@ fn sha256_hex(digest: impl AsRef<[u8]>) -> String {
     out
 }
 
+// Read only by the directory-fd-anchored download (`cfg(unix)`).
+#[cfg_attr(not(unix), allow(dead_code))]
 fn verify_downloaded_sha256(filename: &str, expected: Option<&str>, actual: &[u8]) -> Result<()> {
     let Some(expected) = expected else {
         return Ok(());
